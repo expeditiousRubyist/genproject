@@ -1,0 +1,141 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'fileutils'
+require 'singleton'
+
+class CMakeGenerator
+  include FileUtils
+
+  DUMMY_TEXT = 'PROJNAME'
+
+  def initialize name, type
+    @name = name
+    @type = type
+    @resource_dir = "#{File.dirname(__FILE__)}/genproject-templates"
+    @template_dir = "#{@resource_dir}/#{@ext}"
+  end
+
+  def generate
+    # Create common directories and files
+    mkdir @name
+    cd @name
+    mkdir 'src'
+    cp "#{@resource_dir}/.gitignore", '.gitignore'
+    cp "#{@resource_dir}/build.sh", 'build'
+
+    # Prepare CMakeLists.txt, first source file, and run.sh from templates
+    template "#{@type}-template.cmake", 'CMakeLists.txt'
+    template "#{@type}-template.#{@ext}", "src/#{@name}.#{@ext}"
+    template 'run-template.sh', 'run' if @type == 'application'
+
+    # Allow scripts to be executable
+    chmod '+x', 'run' if File.exists? 'run'
+    chmod '+x', 'build'
+  end
+
+  # Replace dummy text in file from template directory with project name
+  # Output resulting file to current directory under outfile name. 
+  def template infile, outfile
+    filename = "#{@template_dir}/#{infile}"
+    filetext = File.read(filename).gsub DUMMY_TEXT, @name
+    File.write outfile, filetext
+  end
+end
+
+
+class CGenerator < CMakeGenerator
+  def initialize name, type
+    @ext = 'c'
+    super name, type
+  end
+
+  def generate
+    super
+    mkdir 'include'
+  end
+end
+
+class CXXGenerator < CMakeGenerator
+  def initialize name, type
+    @ext = 'cpp'
+    super name, type
+  end
+
+  def generate
+    super
+    mkdir 'include'
+  end
+end
+
+class JavaGenerator < CMakeGenerator
+  def initialize name, type
+    @ext = 'java'
+    super name, type
+  end
+end
+
+class MainProgram < OptionParser
+  include Singleton
+
+  SUPPORTED_TYPES = ['application', 'library']
+
+  def initialize
+    super do |opts|
+      @lang = 'c'
+      @type = 'application'
+
+      opts.banner = "Usage: genproject [options] name...\nOptions:"
+      footer = <<~FOOTER
+      Supported Languages: C (default), C++, Java
+      Supported Types: application (default), library
+      FOOTER
+
+      opts.on("--lang=LANG", "Use LANG as the project language") do |lang|
+        @lang = lang.downcase
+      end
+
+      opts.on("--type=TYPE", "Generate project type TYPE") do |type|
+        @type = type.downcase
+      end
+
+      opts.on_tail("-h", "--help", "Print this message") do
+        puts opts
+        puts footer
+        exit
+      end
+    end
+
+    begin parse!
+    rescue OptionParser::InvalidOption => e; abort e.message
+    end
+
+    @name = ARGV.shift or 'App'
+
+    unless @name.match /[a-zA-Z][a-zA-Z_]*/
+      abort <<~MESSAGE
+      Invalid project name: #{@name}
+      Name must only contain letters and underscores,
+      and must not start with an underscore.
+      MESSAGE
+    end
+
+    unless SUPPORTED_TYPES.include? @type
+      abort "Invalid project type: #{@type}"
+    end
+
+    @template = case @lang
+                when 'c' then CGenerator.new @name, @type
+                when 'c++' then CXXGenerator.new @name, @type
+                when 'java' then JavaGenerator.new @name, @type
+                else abort "Unsupported language #{@lang}"
+                end
+  end
+
+  def run
+    @template.generate
+  end
+end
+
+ARGV << '--help' if ARGV.empty?
+MainProgram.instance.run
